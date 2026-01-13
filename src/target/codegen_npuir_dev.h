@@ -288,7 +288,6 @@ private:
       llvm::SmallVector<mlir::OpFoldResult>& dst_strides);
   void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
 
-
   NPU_CORETYPE func_coretype;
 
   // For mix kernel, generate target functions twice. One is for aic while

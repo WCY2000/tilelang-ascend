@@ -1356,7 +1356,7 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
 ///    T.npuir_cast(A, B, "rint")
 /// after:
 ///    %.* = hivm.hir.vcast ins(A) outs(B) -> tensor<>
-void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
+mlir::Value CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
   tvm::tl::NpuirCast npuirop(op->args, this->vmap);
   Value src = GetVarValue(npuirop.src);
   Value dst = GetVarValue(npuirop.dst);
@@ -1371,6 +1371,7 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
       mlir::hivm::RoundModeAttr::get(&context, mode), nullptr,
       broadcastDimAttr);
   SetVarValue(npuirop.dst, newCastOp->getResult(0));
+  return newCastOp->getResult(0);
 }
 
 /// Generate hivm.hir.vreduce for tl.npuir_cast.
