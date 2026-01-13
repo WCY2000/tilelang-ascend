@@ -898,7 +898,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
     builder.setInsertionPoint(emptyOp);
     
     auto allocOp = builder.create<mlir::memref::AllocOp>(loc, memrefType);
-    emptyOp.erase();
     return allocOp.getResult();
   }
   // Case 2: bufferization.to_tensor -> extract original memref
