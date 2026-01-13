@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import argparse
+import os
 import torch
 import tilelang
 from tilelang import language as T
@@ -33,7 +33,7 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
     ):
         with T.Kernel(1, is_npu=True):
 
-            ub_frag = T.alloc_ub([block_h, width], dtype)
+            ub_frag = T.alloc_fragment([block_h, width], dtype)
             
             for block_idx in T.serial(num_blocks):
                 
@@ -68,7 +68,7 @@ def run_test():
     out = torch.zeros(H // STRIDE, W).npu().half()
 
     compiled_kernel(inp, out)
-    
+
     ref_out = inp[::STRIDE, :].contiguous()
     
     try:
@@ -83,4 +83,6 @@ def run_test():
         print(e)
 
 if __name__ == "__main__":
+    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
+
     run_test()
