@@ -970,6 +970,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src_tensor, 
                     << " != " << target_elements;
       return src_tensor;
     }
+  } else {
+    ICHECK(false) << "Dynamic source shape is not currently supported in MaybeReshapeTensor. "
   }
 
   // 3. Construct the shape tensor for the reshape op
