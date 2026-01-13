@@ -1248,9 +1248,12 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
 
   // === Case 4: MemRef -> MemRef ===
   else if (!src_is_tensor && !dst_is_tensor) {
-    ICHECK(false) << "Unsupported copy operation: memref to memref";
-    return;
-  }
+    mlir::Value src_view = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+
+    mlir::Value dst_view = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+
+    SmartMemRefCopy(src_view, dst_view);
+}
   
   // Unsupported
   else {
