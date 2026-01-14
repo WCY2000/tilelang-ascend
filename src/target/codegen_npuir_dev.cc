@@ -896,7 +896,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
     auto *prevOp = emptyOp->getPrevNode();
     if (prevOp && llvm::isa<mlir::memref::AllocOp>(prevOp)) {
       auto existingAlloc = llvm::cast<mlir::memref::AllocOp>(prevOp);
-      // 确保类型一致，防止误判
       if (existingAlloc.getType() == memrefType) {
          return existingAlloc.getResult();
       }
@@ -1199,20 +1198,23 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   mlir::Value src = GetVarValue(npuirop.src);
   mlir::Value dst = GetVarValue(npuirop.dst);
 
-  // 如果 src 或 dst 是 Tensor，但它们是由 tensor.empty 或 to_tensor 定义的，
-  // 说明它们本质上是 Buffer (MemRef)。我们需要直接操作 Buffer。
+  // Helper: Resolve the underlying MemRef if the Tensor is merely a view or 
+  // placeholder for a physical buffer (e.g., tensor.empty, to_tensor).
   auto try_get_memref = [&](mlir::Value v) -> mlir::Value {
+    // Already a MemRef.
     if (v.getType().isa<mlir::MemRefType>()) return v;
-    // 检查是否是 tensor.empty (对应 alloc_fragment)
+
+    // Case: tensor.empty.
     if (auto emptyOp = v.getDefiningOp<mlir::tensor::EmptyOp>()) {
-       // 调用之前修复过(去掉了erase)的函数来获取 allocOp
        return ConvertTensorToMemref(v); 
     }
-    // 检查是否是 bufferization.to_tensor
+
+    // Case: bufferization.to_tensor. 
     if (auto toTensorOp = v.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
        return toTensorOp.getMemref();
     }
-    return v; // 无法还原，保持原样
+
+    return v; 
   };
 
   mlir::Value src_memref_view = try_get_memref(src);
@@ -1224,27 +1226,23 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   auto [src_offs, src_sizes, src_strides] = CreateOpFoldResultArray(npuirop.src_range);
   auto [dst_offs, dst_sizes, dst_strides] = CreateOpFoldResultArray(npuirop.dst_range);
 
-  // === Case 4 (Priority): MemRef -> MemRef ===
+  // === Case 1: MemRef -> MemRef ===
+  // Prioritize direct buffer-to-buffer copy to avoid unnecessary tensor materialization.
   if (src_is_memref && dst_is_memref) {
-    // 1. 创建 SubViews
+    // 1. Create subviews for source and destination regions based on ranges.
     mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
       builder.getUnknownLoc(), src_memref_view, src_offs, src_sizes, src_strides).getResult();
 
     mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
       builder.getUnknownLoc(), dst_memref_view, dst_offs, dst_sizes, dst_strides).getResult();
 
-    // 2. 执行拷贝
+    // 2. Perform physical copy (handles DMA or local moves).
     SmartMemRefCopy(src_view, dst_view);
 
-    // 更新变量映射！
-    // 如果 dst 原本不是 MemRef (而是 Tensor)，现在我们为它创建/获取了 MemRef，
-    // 必须保存这个映射。这样下一次有人用 dst (比如 ub_frag) 时，
-    // GetVarValue 就会直接返回这个 MemRef，而不会再去创建新的 alloc。
+    // 3. Update symbol table to persist the Tensor-to-MemRef lowering.
     if (dst_memref_view != dst) {
         SetVarValue(npuirop.dst, dst_memref_view);
     }
-    
-    // 同理，如果 src 发生了转换
     if (src_memref_view != src) {
         SetVarValue(npuirop.src, src_memref_view);
     }
@@ -1255,7 +1253,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   bool src_is_tensor = src.getType().isa<mlir::TensorType>();
   bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
   
-  // === Case 1: Tensor -> Tensor ===
+  // === Case 2: Tensor -> Tensor ===
   if (src_is_tensor && dst_is_tensor) {
     auto src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
       builder.getUnknownLoc(), src, src_offs, src_sizes, src_strides).getResult();
@@ -1266,7 +1264,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     SetVarValue(npuirop.dst, result);
   }
 
-  // === Case 2: Tensor -> MemRef (Store) ===
+  // === Case 3: Tensor -> MemRef (Store) ===
   else if (src_is_tensor && !dst_is_tensor) {
     // 1. Extract Slice
     mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
@@ -1285,7 +1283,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     store.setWritable(true);
   }
 
-  // === Case 3: MemRef -> Tensor (Load) ===
+  // === Case 4: MemRef -> Tensor (Load) ===
   else if (!src_is_tensor && dst_is_tensor) {
     // 1. Src View
     mlir::Value src_view = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
