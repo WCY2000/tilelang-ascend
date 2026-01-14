@@ -905,6 +905,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
     mlir::OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPoint(emptyOp);
     
+    // We don't delete tensor.empty, but create an alloc fllow the tensor.empty
     auto allocOp = builder.create<mlir::memref::AllocOp>(loc, memrefType);
     return allocOp.getResult();
   }
@@ -922,7 +923,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
   value.print(os);
   ICHECK(false) << "[AscendCopyCodegen] Fatal Error: Cannot retrieve \
     underlying MemRef for value: " << os.str() << "\n";
-  abort(); 
   return value;
 }
 
@@ -982,6 +982,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src_tensor, 
   }
 
   // 3. Construct the shape tensor for the reshape op
+  // TODO: support dynamic shape
   mlir::Location loc = builder.getUnknownLoc();
   SmallVector<mlir::Value> shapeValues;
   for (int64_t dim : target_shape) {
@@ -1010,6 +1011,7 @@ std::tuple<SmallVector<mlir::OpFoldResult>,
            SmallVector<mlir::OpFoldResult>, 
            SmallVector<mlir::OpFoldResult>> 
 CodeGenTileLangNPUIRDEV::CreateOpFoldResultArray(const Array<Range>& range) {
+  // TODO: support dynamic shape
   SmallVector<mlir::OpFoldResult> offsets;
   SmallVector<mlir::OpFoldResult> sizes;
   SmallVector<mlir::OpFoldResult> strides;
@@ -1090,6 +1092,7 @@ void CodeGenTileLangNPUIRDEV::SmartMemRefCopy(mlir::Value src, mlir::Value dst) 
     offsets.push_back(offsetValue);
 
     // 2. compute strides (suppose continuous layout)
+    // don't consider dynamic shape, if it's dynamic shape, we will get -1
     llvm::SmallVector<int64_t> dst_strides;
     int64_t stride = 1;
     for (int i = dst_type.getRank() - 1; i >= 0; --i) {
