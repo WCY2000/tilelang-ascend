@@ -1190,8 +1190,43 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   mlir::Value src = GetVarValue(npuirop.src);
   mlir::Value dst = GetVarValue(npuirop.dst);
 
+  // 如果 src 或 dst 是 Tensor，但它们是由 tensor.empty 或 to_tensor 定义的，
+  // 说明它们本质上是 Buffer (MemRef)。我们需要直接操作 Buffer。
+  auto try_get_memref = [&](mlir::Value v) -> mlir::Value {
+    if (v.getType().isa<mlir::MemRefType>()) return v;
+    // 检查是否是 tensor.empty (对应 alloc_fragment)
+    if (auto emptyOp = v.getDefiningOp<mlir::tensor::EmptyOp>()) {
+       // 调用之前修复过(去掉了erase)的函数来获取 allocOp
+       return ConvertTensorToMemref(v); 
+    }
+    // 检查是否是 bufferization.to_tensor
+    if (auto toTensorOp = v.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
+       return toTensorOp.getMemref();
+    }
+    return v; // 无法还原，保持原样
+  };
+
+  mlir::Value src_memref_view = try_get_memref(src);
+  mlir::Value dst_memref_view = try_get_memref(dst);
+
+  bool src_is_memref = src_memref_view.getType().isa<mlir::MemRefType>();
+  bool dst_is_memref = dst_memref_view.getType().isa<mlir::MemRefType>();
+
   auto [src_offs, src_sizes, src_strides] = CreateOpFoldResultArray(npuirop.src_range);
   auto [dst_offs, dst_sizes, dst_strides] = CreateOpFoldResultArray(npuirop.dst_range);
+
+  // === Case 4 (Priority): MemRef -> MemRef ===
+  if (src_is_memref && dst_is_memref) {
+    // 1. Src View
+    mlir::Value src_view = GenSubviewFromRegion(src_memref_view, npuirop.src_range);
+
+    // 2. Dst View
+    mlir::Value dst_view = GenSubviewFromRegion(dst_memref_view, npuirop.dst_range);
+
+    // 3. Smart Copy
+    SmartMemRefCopy(src_view, dst_view);
+    return;
+  }
 
   bool src_is_tensor = src.getType().isa<mlir::TensorType>();
   bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
@@ -1216,7 +1251,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     // 2. Dst View
     mlir::Value dst_view = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
     
-    // 3. Cast & Reshape (Linear Flow)
+    // 3. Cast & Reshape
     src_slice = CreateCastIfTypeMismatch(src_slice, dst_view);
     src_slice = MaybeReshapeTensor(src_slice, dst_view.getType().cast<mlir::MemRefType>().getShape());
 
@@ -1244,15 +1279,6 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
       builder.getUnknownLoc(), dst_full_memref, true, true);
     SetVarValue(npuirop.dst, result);
   }
-
-  // === Case 4: MemRef -> MemRef ===
-  else if (!src_is_tensor && !dst_is_tensor) {
-    mlir::Value src_view = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-
-    mlir::Value dst_view = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-
-    SmartMemRefCopy(src_view, dst_view);
-}
   
   // Unsupported
   else {
