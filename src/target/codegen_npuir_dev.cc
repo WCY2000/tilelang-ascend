@@ -892,6 +892,15 @@ mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
     auto memrefType = mlir::MemRefType::get(
       tensorType.getShape(),
       tensorType.getElementType());
+
+    auto *prevOp = emptyOp->getPrevNode();
+    if (prevOp && llvm::isa<mlir::memref::AllocOp>(prevOp)) {
+      auto existingAlloc = llvm::cast<mlir::memref::AllocOp>(prevOp);
+      // 确保类型一致，防止误判
+      if (existingAlloc.getType() == memrefType) {
+         return existingAlloc.getResult();
+      }
+    }
     
     mlir::Location loc = emptyOp.getLoc();
     mlir::OpBuilder::InsertionGuard guard(builder);
