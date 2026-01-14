@@ -1229,12 +1229,14 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   // === Case 1: MemRef -> MemRef ===
   // Prioritize direct buffer-to-buffer copy to avoid unnecessary tensor materialization.
   if (src_is_memref && dst_is_memref) {
+    auto loc = builder.getUnknownLoc();
+
     // 1. Create subviews for source and destination regions based on ranges.
     mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
-      builder.getUnknownLoc(), src_memref_view, src_offs, src_sizes, src_strides).getResult();
+      loc, src_memref_view, src_offs, src_sizes, src_strides).getResult();
 
     mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
-      builder.getUnknownLoc(), dst_memref_view, dst_offs, dst_sizes, dst_strides).getResult();
+      loc, dst_memref_view, dst_offs, dst_sizes, dst_strides).getResult();
 
     // 2. Perform physical copy (handles DMA or local moves).
     SmartMemRefCopy(src_view, dst_view);
@@ -1243,7 +1245,6 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
         auto new_tensor_wrapper = builder.create<mlir::bufferization::ToTensorOp>(
             loc, dst_memref_view, /*restrict=*/true, /*writable=*/true
         );
-        
         SetVarValue(npuirop.dst, new_tensor_wrapper);
     }
 
