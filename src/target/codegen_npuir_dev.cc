@@ -1217,13 +1217,22 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
 
   // === Case 4 (Priority): MemRef -> MemRef ===
   if (src_is_memref && dst_is_memref) {
-    // 1. Src View
-    mlir::Value src_view = GenSubviewFromRegion(src_memref_view, npuirop.src_range);
+    mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
+      builder.getUnknownLoc(), 
+      src_memref_view, 
+      src_offs, 
+      src_sizes, 
+      src_strides
+    ).getResult();
 
-    // 2. Dst View
-    mlir::Value dst_view = GenSubviewFromRegion(dst_memref_view, npuirop.dst_range);
+    mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
+      builder.getUnknownLoc(), 
+      dst_memref_view, 
+      dst_offs, 
+      dst_sizes, 
+      dst_strides
+    ).getResult();
 
-    // 3. Smart Copy
     SmartMemRefCopy(src_view, dst_view);
     return;
   }
