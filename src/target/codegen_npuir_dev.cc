@@ -1142,6 +1142,37 @@ void CodeGenTileLangNPUIRDEV::SmartMemRefCopy(mlir::Value src, mlir::Value dst) 
   ICHECK(false) << "SmartMemRefCopy: Shape mismatch and cannot interpret cast. ";
 }
 
+mlir::Value CodeGenTileLangNPUIRDEV::GetOrInsertMasterTensor(mlir::Value memref) {
+  // 1. 如果本身就是 Tensor，直接返回
+  if (memref.getType().isa<mlir::TensorType>()) return memref;
+
+  // 2. 查找是否已经有“主视图” (Master View)
+  // 我们只复用那些 restrict+writable 的全量视图
+  for (auto *user : memref.getUsers()) {
+    if (auto toTensor = llvm::dyn_cast<mlir::bufferization::ToTensorOp>(user)) {
+      if (toTensor.getRestrict() && toTensor.getWritable()) {
+        return toTensor.getResult();
+      }
+    }
+  }
+
+  // 3. 如果没有，创建一个新的，但要【提升插入点】(Hoisting)
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  
+  if (auto defOp = memref.getDefiningOp()) {
+    // 插入在定义指令之后 (例如 alloc 之后)
+    builder.setInsertionPointAfter(defOp);
+  } else {
+    // 如果是 Block Argument，插入在 Block 开头
+    builder.setInsertionPointToStart(memref.getParentBlock());
+  }
+
+  auto newTensor = builder.create<mlir::bufferization::ToTensorOp>(
+      memref.getLoc(), memref, /*restrict=*/true, /*writable=*/true);
+      
+  return newTensor.getResult();
+}
+
 /*
   T contains the type of binary operation
   U contains the type of comparison mode
@@ -1201,123 +1232,120 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   mlir::Value src = GetVarValue(npuirop.src);
   mlir::Value dst = GetVarValue(npuirop.dst);
 
-  // Helper: Resolve the underlying MemRef if the Tensor is merely a view or 
-  // placeholder for a physical buffer (e.g., tensor.empty, to_tensor).
+  // 1. 透视：获取底层的 MemRef (如果存在)
   auto try_get_memref = [&](mlir::Value v) -> mlir::Value {
-    // Already a MemRef.
     if (v.getType().isa<mlir::MemRefType>()) return v;
-
-    // Case: tensor.empty.
-    if (auto emptyOp = v.getDefiningOp<mlir::tensor::EmptyOp>()) {
-       return ConvertTensorToMemref(v); 
-    }
-
-    // Case: bufferization.to_tensor. 
-    if (auto toTensorOp = v.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
-       return toTensorOp.getMemref();
-    }
-
+    if (auto emptyOp = v.getDefiningOp<mlir::tensor::EmptyOp>()) return ConvertTensorToMemref(v); 
+    if (auto toTensorOp = v.getDefiningOp<mlir::bufferization::ToTensorOp>()) return toTensorOp.getMemref();
     return v; 
   };
 
   mlir::Value src_memref_view = try_get_memref(src);
   mlir::Value dst_memref_view = try_get_memref(dst);
 
-  bool src_is_memref = src_memref_view.getType().isa<mlir::MemRefType>();
-  bool dst_is_memref = dst_memref_view.getType().isa<mlir::MemRefType>();
+  // 核心标志位：本质上是不是 MemRef？
+  bool src_is_memref_core = src_memref_view.getType().isa<mlir::MemRefType>();
+  bool dst_is_memref_core = dst_memref_view.getType().isa<mlir::MemRefType>();
 
   auto [src_offs, src_sizes, src_strides] = CreateOpFoldResultArray(npuirop.src_range);
   auto [dst_offs, dst_sizes, dst_strides] = CreateOpFoldResultArray(npuirop.dst_range);
+  auto loc = builder.getUnknownLoc();
 
-  // === Case 1: MemRef -> MemRef ===
-  // Prioritize direct buffer-to-buffer copy to avoid unnecessary tensor materialization.
-  if (src_is_memref && dst_is_memref) {
-    auto loc = builder.getUnknownLoc();
-
-    // 1. Create subviews for source and destination regions based on ranges.
+  // =========================================================
+  // Case A: MemRef -> MemRef (Direct Copy)
+  // 只要两端本质上都是 MemRef，就走最高效的物理拷贝。
+  // =========================================================
+  if (src_is_memref_core && dst_is_memref_core) {
+    // 1. Create SubViews
     mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
       loc, src_memref_view, src_offs, src_sizes, src_strides).getResult();
-
     mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
       loc, dst_memref_view, dst_offs, dst_sizes, dst_strides).getResult();
 
-    // 2. Perform physical copy (handles DMA or local moves).
+    // 2. Physical Copy
     SmartMemRefCopy(src_view, dst_view);
 
+    // 3. State Sync (Fix SSA Issue)
+    // 即使在 Tensor 层面它们是 Wrapper，我们也要确保符号表指向一个“主视图”
+    // 这样后续计算指令拿到的就是一个合法的、定义域正确的 Tensor
     if (dst.getType().isa<mlir::TensorType>()) {
-        auto new_tensor_wrapper = builder.create<mlir::bufferization::ToTensorOp>(
-            loc, dst_memref_view, /*restrict=*/true, /*writable=*/true
-        );
-        SetVarValue(npuirop.dst, new_tensor_wrapper);
+        SetVarValue(npuirop.dst, GetOrInsertMasterTensor(dst_memref_view));
     }
-
     if (src.getType().isa<mlir::TensorType>()) {
-        auto new_tensor_wrapper = builder.create<mlir::bufferization::ToTensorOp>(
-            loc, src_memref_view, /*restrict=*/true, /*writable=*/true
-        );
-        SetVarValue(npuirop.src, new_tensor_wrapper);
+        SetVarValue(npuirop.src, GetOrInsertMasterTensor(src_memref_view));
     }
-
     return;
   }
 
-  bool src_is_tensor = src.getType().isa<mlir::TensorType>();
-  bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
-  
-  // === Case 2: Tensor -> Tensor ===
-  if (src_is_tensor && dst_is_tensor) {
-    auto src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      builder.getUnknownLoc(), src, src_offs, src_sizes, src_strides).getResult();
-        
-    auto result = InsertSliceWithReshapeAndCast(
-      src_slice, dst, dst_offs, dst_sizes, dst_strides);
-        
-    SetVarValue(npuirop.dst, result);
-  }
-
-  // === Case 3: Tensor -> MemRef (Store) ===
-  else if (src_is_tensor && !dst_is_tensor) {
-    // 1. Extract Slice
+  // =========================================================
+  // Case B: Tensor -> MemRef (Store / Materialize)
+  // 如果 DST 本质是 MemRef (哪怕它伪装成了 Tensor)，必须走写内存逻辑！
+  // 这一点修复了 "Fake Tensor" 导致的 insert_slice 纯函数陷阱。
+  // =========================================================
+  if (dst_is_memref_core) { // 隐含 src 是 Tensor，否则会进 Case A
+    // 1. Extract Slice from SRC
     mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      builder.getUnknownLoc(), src, src_offs, src_sizes, src_strides).getResult();
+      loc, src, src_offs, src_sizes, src_strides).getResult();
 
     // 2. Dst View
-    mlir::Value dst_view = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+    // 注意：必须用 dst_memref_view 创建 view，不能用 dst (可能是 Tensor)
+    mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
+        loc, dst_memref_view, dst_offs, dst_sizes, dst_strides);
     
     // 3. Cast & Reshape
     src_slice = CreateCastIfTypeMismatch(src_slice, dst_view);
     src_slice = MaybeReshapeTensor(src_slice, dst_view.getType().cast<mlir::MemRefType>().getShape());
 
-    // 4. Materialize
+    // 4. Materialize (Write to Buffer)
     auto store = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
-      builder.getUnknownLoc(), src_slice, dst_view);
+      loc, src_slice, dst_view);
     store.setWritable(true);
-  }
 
-  // === Case 4: MemRef -> Tensor (Load) ===
-  else if (!src_is_tensor && dst_is_tensor) {
-    // 1. Src View
-    mlir::Value src_view = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-
-    // 2. Dst Full MemRef & View
-    mlir::Value dst_full_memref = ConvertTensorToMemref(dst);
-    mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
-      builder.getUnknownLoc(), dst_full_memref, dst_offs, dst_sizes, dst_strides).getResult();
-
-    // 3. Smart Copy (Handles Shape Mismatch internally)
-    SmartMemRefCopy(src_view, dst_view);
-
-    // 4. Return Full Tensor
-    mlir::Value result = builder.create<mlir::bufferization::ToTensorOp>(
-      builder.getUnknownLoc(), dst_full_memref, true, true);
-    SetVarValue(npuirop.dst, result);
-  }
-  
-  // Unsupported
-  else {
-    ICHECK(false) << "Unsupported copy operation: ? to ?.";
+    // 5. State Sync
+    if (dst.getType().isa<mlir::TensorType>()) {
+        SetVarValue(npuirop.dst, GetOrInsertMasterTensor(dst_memref_view));
+    }
     return;
   }
+
+  // =========================================================
+  // Case C: MemRef -> Tensor (Load)
+  // SRC 是 MemRef，DST 是纯 Tensor (且无法追踪到底层 Buffer)
+  // =========================================================
+  if (src_is_memref_core && !dst_is_memref_core) {
+    // 1. Src View
+    mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
+      loc, src_memref_view, src_offs, src_sizes, src_strides).getResult();
+
+    // 2. Alloc DST Buffer (Convert pure tensor to memref)
+    mlir::Value dst_full_memref = ConvertTensorToMemref(dst); // 这里会处理 Attribute 查重
+    mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
+      loc, dst_full_memref, dst_offs, dst_sizes, dst_strides).getResult();
+
+    // 3. Copy
+    SmartMemRefCopy(src_view, dst_view);
+
+    // 4. Return Master Tensor View
+    SetVarValue(npuirop.dst, GetOrInsertMasterTensor(dst_full_memref));
+    return;
+  }
+
+  // =========================================================
+  // Case D: Tensor -> Tensor (Functional)
+  // 只有当两边都是纯 Tensor，且没有任何底层 Buffer 时才走这里。
+  // =========================================================
+  if (!src_is_memref_core && !dst_is_memref_core) {
+     auto src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
+       loc, src, src_offs, src_sizes, src_strides).getResult();
+        
+     auto result = InsertSliceWithReshapeAndCast(
+       src_slice, dst, dst_offs, dst_sizes, dst_strides);
+        
+     SetVarValue(npuirop.dst, result);
+     return;
+  }
+
+  ICHECK(false) << "Unsupported copy dispatch state.";
 }
 
 /// Generate hivm.hir.vexp for tl.npuir_exp
