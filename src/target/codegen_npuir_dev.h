@@ -288,6 +288,7 @@ private:
       llvm::SmallVector<mlir::OpFoldResult>& dst_strides);
   void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
   mlir::Value GetOrInsertMasterTensor(mlir::Value memref);
+  llvm::DenseMap<mlir::Operation*, mlir::Value> alloc_memo_;
 
   NPU_CORETYPE func_coretype;
 

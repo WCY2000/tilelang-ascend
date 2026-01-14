@@ -888,31 +888,34 @@ inline void CodeGenTileLangNPUIRDEV::UpdatePrimExprMap(const PrimExprNode * key,
 mlir::Value CodeGenTileLangNPUIRDEV::ConvertTensorToMemref(mlir::Value value) {
   // Case 1: tensor.empty -> memref.alloc
   if (auto emptyOp = value.getDefiningOp<mlir::tensor::EmptyOp>()) {
+    
+    // 【核心修复】查表：如果这个 emptyOp 已经被转换过，直接返回之前创建的 alloc
+    if (alloc_memo_.count(emptyOp)) {
+        return alloc_memo_[emptyOp];
+    }
+
     auto tensorType = emptyOp.getType().cast<mlir::RankedTensorType>();
     auto memrefType = mlir::MemRefType::get(
       tensorType.getShape(),
       tensorType.getElementType());
-
-    auto *prevOp = emptyOp->getPrevNode();
-    if (prevOp && llvm::isa<mlir::memref::AllocOp>(prevOp)) {
-      auto existingAlloc = llvm::cast<mlir::memref::AllocOp>(prevOp);
-      if (existingAlloc.getType() == memrefType) {
-         return existingAlloc.getResult();
-      }
-    }
     
     mlir::Location loc = emptyOp.getLoc();
     mlir::OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPoint(emptyOp);
+    builder.setInsertionPoint(emptyOp); // 插入在 empty 之前
     
-    // We don't delete tensor.empty, but create an alloc fllow the tensor.empty
     auto allocOp = builder.create<mlir::memref::AllocOp>(loc, memrefType);
+    
+    // 【核心修复】记录到表中
+    alloc_memo_[emptyOp] = allocOp.getResult();
+    
     return allocOp.getResult();
   }
+  
   // Case 2: bufferization.to_tensor -> extract original memref
   if (auto toTensorOp = value.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
     return toTensorOp.getMemref();
   }
+  
   // Case 3: already a memref
   if (value.getType().isa<mlir::MemRefType>()) {
     return value;
