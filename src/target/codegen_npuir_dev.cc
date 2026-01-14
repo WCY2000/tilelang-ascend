@@ -1239,12 +1239,19 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     // 2. Perform physical copy (handles DMA or local moves).
     SmartMemRefCopy(src_view, dst_view);
 
-    // 3. Update symbol table to persist the Tensor-to-MemRef lowering.
-    if (dst_memref_view != dst) {
-        SetVarValue(npuirop.dst, dst_memref_view);
+    if (dst.getType().isa<mlir::TensorType>()) {
+        auto new_tensor_wrapper = builder.create<mlir::bufferization::ToTensorOp>(
+            loc, dst_memref_view, /*restrict=*/true, /*writable=*/true
+        );
+        
+        SetVarValue(npuirop.dst, new_tensor_wrapper);
     }
-    if (src_memref_view != src) {
-        SetVarValue(npuirop.src, src_memref_view);
+
+    if (src.getType().isa<mlir::TensorType>()) {
+        auto new_tensor_wrapper = builder.create<mlir::bufferization::ToTensorOp>(
+            loc, src_memref_view, /*restrict=*/true, /*writable=*/true
+        );
+        SetVarValue(npuirop.src, new_tensor_wrapper);
     }
 
     return;
