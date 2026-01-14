@@ -1217,23 +1217,29 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
 
   // === Case 4 (Priority): MemRef -> MemRef ===
   if (src_is_memref && dst_is_memref) {
+    // 1. 创建 SubViews
     mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
-      builder.getUnknownLoc(), 
-      src_memref_view, 
-      src_offs, 
-      src_sizes, 
-      src_strides
-    ).getResult();
+      builder.getUnknownLoc(), src_memref_view, src_offs, src_sizes, src_strides).getResult();
 
     mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
-      builder.getUnknownLoc(), 
-      dst_memref_view, 
-      dst_offs, 
-      dst_sizes, 
-      dst_strides
-    ).getResult();
+      builder.getUnknownLoc(), dst_memref_view, dst_offs, dst_sizes, dst_strides).getResult();
 
+    // 2. 执行拷贝
     SmartMemRefCopy(src_view, dst_view);
+
+    // 更新变量映射！
+    // 如果 dst 原本不是 MemRef (而是 Tensor)，现在我们为它创建/获取了 MemRef，
+    // 必须保存这个映射。这样下一次有人用 dst (比如 ub_frag) 时，
+    // GetVarValue 就会直接返回这个 MemRef，而不会再去创建新的 alloc。
+    if (dst_memref_view != dst) {
+        SetVarValue(npuirop.dst, dst_memref_view);
+    }
+    
+    // 同理，如果 src 发生了转换
+    if (src_memref_view != src) {
+        SetVarValue(npuirop.src, src_memref_view);
+    }
+
     return;
   }
 
