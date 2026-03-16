@@ -1368,11 +1368,9 @@ class compiler_npu:
                 # print error info
                 print("err cmd:", " ".join(opt_cmd_list))
                 print(f"err code: {e.returncode}")
-                print("err info:", e.stderr)
-                sys.exit(1)
+                raise RuntimeError(f"NPU IR opt failed: {e.stderr}")
             except Exception as e:
-                print(f"error: {str(e)}")
-                sys.exit(1)
+                raise RuntimeError(f"NPU IR opt failed: {e.stderr}")
             # 1. Read ttadapter_opt_path
             with open(ttadapter_opt_path, 'r') as f:
                 npuir_opt = f.read()
@@ -1413,11 +1411,9 @@ class compiler_npu:
                 # print error info
                 print("err cmd:", " ".join(cmd_list))
                 print(f"err code: {e.returncode}")
-                print("err info:", e.stderr)
-                sys.exit(1)
+                raise RuntimeError(f"NPU IR opt failed: {e.stderr}")
             except Exception as e:
-                print(f"error: {str(e)}")
-                sys.exit(1)
+                raise RuntimeError(f"NPU IR opt failed: {e.stderr}")
 
             if not Path(bin_path).exists():
                 err_lines = [
