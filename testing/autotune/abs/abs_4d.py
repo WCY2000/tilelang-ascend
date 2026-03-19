@@ -11,7 +11,7 @@ from tilelang.carver.arch.ascend import Ascend
 
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
 SHAPES = [
     (8, 4, 8, 64),
@@ -21,9 +21,8 @@ SHAPES = [
     (16, 8, 16, 255),
 ]
 
-
 def run_single_shape(shape, log_dir: Path):
-    # tilelang.cache.clear_cache()
+    tilelang.cache.clear_cache()
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "log.log"
@@ -51,7 +50,7 @@ def run_single_shape(shape, log_dir: Path):
 
                     carver_template = carver.ElementwiseFixTemplate(
                         shape=[N, C, H, W],
-                        dtype="float32",
+                        dtype="float16",
                     ).with_arch(arch)
 
                     hints = carver_template.recommend_hints(topk=20)
@@ -66,18 +65,16 @@ def run_single_shape(shape, log_dir: Path):
                         shape_dims = [N,C,H,W]
                         result_blocks = []
 
-                        j = 0  # hint.block 的索引
+                        j = 0
 
                         for dim in shape_dims:
                             if dim == 1:
-                                # 这一维不参与 tiling
                                 result_blocks.append(1)
                             else:
                                 if j < ndim:
                                     result_blocks.append(blocks[j])
                                     j += 1
                                 else:
-                                    # hint.block 不够长，fallback
                                     result_blocks.append(1)
 
                         configs.append({
@@ -95,7 +92,7 @@ def run_single_shape(shape, log_dir: Path):
                 def supply_prog(params):
                     torch.manual_seed(0)
                     return [
-                        torch.randn(N, C, H, W, dtype=torch.float32).npu(),
+                        torch.randn(N, C, H, W, dtype=torch.float16).npu(),
                     ]
 
                 # ------------------------
@@ -113,8 +110,8 @@ def run_single_shape(shape, log_dir: Path):
 
                     @T.prim_func
                     def elemAbs(
-                        A: T.Tensor((N, C, H, W), "float32"),
-                        C_out: T.Tensor((N, C, H, W), "float32"),
+                        A: T.Tensor((N, C, H, W), "float16"),
+                        C_out: T.Tensor((N, C, H, W), "float16"),
                     ):
                         with T.Kernel(
                             T.ceildiv(N, block_N)
@@ -149,11 +146,11 @@ def run_single_shape(shape, log_dir: Path):
 
                             A_shared = T.alloc_shared(
                                 (block_N, block_C, block_H, block_W),
-                                "float32",
+                                "float16",
                             )
                             C_local = T.alloc_fragment(
                                 (block_N, block_C, block_H, block_W),
-                                "float32",
+                                "float16",
                             )
 
                             T.copy(
@@ -192,16 +189,14 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
-
 def main():
-    root_log_dir = Path("./shape_logs_4d")
+    root_log_dir = Path("./shape_logs_4d_f16")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
-
 
 if __name__ == "__main__":
     main()
