@@ -89,7 +89,6 @@ def run_single_shape(shape, log_dir: Path):
                     return [
                         torch.randn(B, M, N, dtype=torch.float16).npu(),
                         torch.randn(B, M, N, dtype=torch.float16).npu(),
-                        torch.randn(B, M, N, dtype=torch.float16).npu(),
                     ]
 
                 @tilelang.autotune(
