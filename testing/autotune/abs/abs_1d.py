@@ -11,7 +11,7 @@ from tilelang.carver.arch.ascend import Ascend
 
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
 SHAPES = [
     (64,),
@@ -21,8 +21,6 @@ SHAPES = [
     (255,),
     (1025,),
 ]
-
-
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -133,7 +131,6 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
-
 
 if __name__ == "__main__":
     main()
