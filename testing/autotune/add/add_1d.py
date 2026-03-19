@@ -11,12 +11,8 @@ from tilelang.carver.arch.ascend import Ascend
 
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
-# SHAPES = [
-#     (64,),
-
-# ]
 SHAPES = [
     (64,),
     (128,),
@@ -28,7 +24,7 @@ SHAPES = [
 
 
 def run_single_shape(shape, log_dir: Path):
-    # tilelang.cache.clear_cache()
+    tilelang.cache.clear_cache()
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "log.log"
@@ -68,7 +64,6 @@ def run_single_shape(shape, log_dir: Path):
                 def supply_prog(params):
                     torch.manual_seed(0)
                     return [
-                        torch.randn(M, dtype=torch.float16).npu(),
                         torch.randn(M, dtype=torch.float16).npu(),
                         torch.randn(M, dtype=torch.float16).npu(),
                     ]
@@ -120,7 +115,6 @@ def run_single_shape(shape, log_dir: Path):
                 traceback.print_exc()
 
     print(f"Finished shape {shape}, log saved to {log_file}")
-
 
 def main():
     root_log_dir = Path("./shape_logs_1d")
