@@ -11,12 +11,10 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
-# 你给的所有 shape
 SHAPES = [
     (8, 64),
     (8, 128),
@@ -72,7 +70,6 @@ def run_single_shape(shape, log_dir: Path):
                 def supply_prog(params):
                     torch.manual_seed(0)
                     return [
-                        torch.randn(M, N, dtype=torch.float16).npu(),
                         torch.randn(M, N, dtype=torch.float16).npu(),
                         torch.randn(M, N, dtype=torch.float16).npu(),
                     ]
@@ -131,7 +128,6 @@ def main():
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:
-        # 为每个shape创建目录名
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
 
