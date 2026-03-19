@@ -9,10 +9,9 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
 # 4D shape (N, C, H, W)
 SHAPES = [
@@ -24,7 +23,7 @@ SHAPES = [
 ]
 
 def run_single_shape(shape, log_dir: Path):
-    # tilelang.cache.clear_cache()
+    tilelang.cache.clear_cache()
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "log.log"
@@ -53,14 +52,7 @@ def run_single_shape(shape, log_dir: Path):
                     hints = carver_template.recommend_hints(topk=20)
 
                     configs = []
-                    # for hint in hints:
-                    #     print("Hint:", hint)
-                    #     configs.append({
-                    #         "block_N": hint.block[0],
-                    #         "block_C": hint.block[1],
-                    #         "block_H": hint.block[2],
-                    #         "block_W": hint.block[3],
-                    #     })
+
                     for hint in hints:
                         print("Hint:", hint)
 
@@ -70,18 +62,16 @@ def run_single_shape(shape, log_dir: Path):
                         shape_dims = [N,C,H,W]
                         result_blocks = []
 
-                        j = 0  # hint.block 的索引
+                        j = 0
 
                         for dim in shape_dims:
                             if dim == 1:
-                                # 这一维不参与 tiling
                                 result_blocks.append(1)
                             else:
                                 if j < ndim:
                                     result_blocks.append(blocks[j])
                                     j += 1
                                 else:
-                                    # hint.block 不够长，fallback
                                     result_blocks.append(1)
 
                         configs.append({
@@ -96,7 +86,6 @@ def run_single_shape(shape, log_dir: Path):
                 def supply_prog(params):
                     torch.manual_seed(0)
                     return [
-                        torch.randn(N, C, H, W, dtype=torch.float16).npu(),
                         torch.randn(N, C, H, W, dtype=torch.float16).npu(),
                         torch.randn(N, C, H, W, dtype=torch.float16).npu(),
                     ]
@@ -211,7 +200,6 @@ def run_single_shape(shape, log_dir: Path):
                 traceback.print_exc()
 
     print(f"Finished shape {shape}, log saved to {log_file}")
-
 
 def main():
     root_log_dir = Path("./shape_logs_4d")
