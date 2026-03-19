@@ -11,7 +11,7 @@ from tilelang.carver.arch.ascend import Ascend
 
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(9)
+torch.npu.set_device(15)
 
 SHAPES = [
     (1, 32, 64),
@@ -23,9 +23,8 @@ SHAPES = [
     (32, 1632, 1025),
 ]
 
-
 def run_single_shape(shape, log_dir: Path):
-    # tilelang.cache.clear_cache()
+    tilelang.cache.clear_cache()
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "log.log"
@@ -68,18 +67,16 @@ def run_single_shape(shape, log_dir: Path):
                         shape_dims = [B, M, N]
                         result_blocks = []
 
-                        j = 0  # hint.block 的索引
+                        j = 0
 
                         for dim in shape_dims:
                             if dim == 1:
-                                # 这一维不参与 tiling
                                 result_blocks.append(1)
                             else:
                                 if j < ndim:
                                     result_blocks.append(blocks[j])
                                     j += 1
                                 else:
-                                    # hint.block 不够长，fallback
                                     result_blocks.append(1)
 
                         configs.append({
@@ -167,7 +164,6 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
-
 def main():
     root_log_dir = Path("./shape_logs_3d")
     root_log_dir.mkdir(exist_ok=True)
@@ -176,7 +172,6 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
-
 
 if __name__ == "__main__":
     main()
