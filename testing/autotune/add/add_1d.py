@@ -22,7 +22,6 @@ SHAPES = [
     (1025,),
 ]
 
-
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -46,7 +45,7 @@ def run_single_shape(shape, log_dir: Path):
 
                     # 1D template
                     carver_template = carver.ElementwiseFixTemplate(
-                        shape=[M],          # ⚠️ 1D
+                        shape=[M],
                         dtype="float16",
                     ).with_arch(arch)
 
@@ -56,7 +55,7 @@ def run_single_shape(shape, log_dir: Path):
                     for hint in hints:
                         print("Hint:", hint)
                         configs.append({
-                            "block_M": hint.block[0],   # 只需要一个 block
+                            "block_M": hint.block[0],
                         })
 
                     return configs
@@ -124,7 +123,6 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
-
 
 if __name__ == "__main__":
     main()
