@@ -178,7 +178,7 @@ class AscendDefaultPolicy(DefaultPolicy):
 
         self.max_total_numel = 1
         for _steps in steps:
-            self.max_total_numel *= _steps[len(steps) - 1]
+            self.max_total_numel *= _steps[len(_steps) - 1]
 
         self.tiny_kernel = self.max_total_numel < 128 * 1024
         self.stop_numel = min(1024 // dtype_bytes, self.max_total_numel // (self.num_ai_cores * 2)) if self.tiny_kernel else 1024 // dtype_bytes
