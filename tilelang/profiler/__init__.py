@@ -73,6 +73,7 @@ class Profiler:
     def _get_params(self, with_output=False):
         
         params = []
+        print("self.params: ", self.params)
         for i in range(len(self.params)):
             if with_output or i not in self.result_idx:
                 params.append(self.params[i])
