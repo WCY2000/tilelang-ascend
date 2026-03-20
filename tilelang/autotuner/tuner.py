@@ -350,12 +350,18 @@ class AutoTuner:
             def get_input_tensors_supply(with_output: bool):
                 def func():
                     if supply_prog is not None:
-                        return supply_prog(profiler._get_params(with_output=with_output))
+                        if hasattr(self, "_runtime_params"):
+                            print("_runtime_params", self._runtime_params)
+                            params = self._runtime_params
+                        else:
+                            params = profiler._get_params(with_output=False)
+                        return supply_prog(params)
                     else:
                         return profiler._get_inputs(with_output=with_output)
 
                 return func
             jit_input_tensors_supply = get_input_tensors_supply(with_output=False)
+            print("jit_input_tensors_supply", jit_input_tensors_supply)
             ref_input_tensors_supply = get_input_tensors_supply(with_output=False)
             
             if cache_input_tensors:
@@ -532,7 +538,8 @@ class AutoTuner:
                 logger.debug(
                     f"Compilation failed for config {config} at index {idx} with error: {e}")
                 continue
-
+        
+        print("<<< results_with_configs", results_with_configs)
         ref_latency = None
         progress_bar = tqdm(range(len(results_with_configs)), desc="Bench configurations")
         use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
@@ -549,7 +556,12 @@ class AutoTuner:
 
                 
                 if profile_args.supply_prog is not None:
-                    input_tensors = profile_args.supply_prog(profiler._get_params(with_output=False))
+                    if hasattr(self, "_runtime_params"):
+                        print("_runtime_params", self._runtime_params)
+                        params = self._runtime_params
+                    else:
+                        params = profiler._get_params(with_output=False)
+                    input_tensors = profile_args.supply_prog(params)
                 else:
                     input_tensors = profiler._get_inputs(with_output=False)
                     
@@ -580,11 +592,15 @@ class AutoTuner:
         else:
             for i in progress_bar:
                 jit_kernel, config = results_with_configs[i]
+                print("jit_kernel:",jit_kernel)
+                print("config:",config)
                 try:
                     # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
                     # Because tma init may behave strangely with one thread
                     # latency, ref_latency = target_fn(jit_kernel)
                     latency, ref_latency = run_with_timeout(target_fn, timeout, jit_kernel)
+                    print("latency", latency)
+                    print("ref_latency", ref_latency)
                 except TimeoutException:
                     logger.warning(
                         f"A timeout occurred while testing config {config}, checkout autotuner.log for more details"
@@ -807,6 +823,167 @@ def autotune(  # This is the new public interface
             return AutoTuneImpl(
                 jit_impl=jit_impl,
                 configs=configs,
+                warmup=warmup,
+                rep=rep,
+                timeout=timeout,
+                supply_type=supply_type,
+                ref_prog=ref_prog,
+                supply_prog=supply_prog,
+                rtol=rtol,
+                atol=atol,
+                max_mismatched_ratio=max_mismatched_ratio,
+                skip_check=skip_check,
+                manual_check_prog=manual_check_prog,
+                cache_input_tensors=cache_input_tensors,
+            )
+
+        return decorator
+
+@dataclass
+class AutoTuneDynamicImpl(Generic[_P, _T]):
+    jit_impl: JITImpl
+
+    warmup: int
+    rep: int
+    timeout: int
+    configs: dict | Callable
+    key_fn: Callable[..., Any] | None = None
+
+    # profile args
+    supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto
+    ref_prog: Callable | None = None
+    supply_prog: Callable | None = None
+    rtol: float = 1e-2
+    atol: float = 1e-2
+    max_mismatched_ratio: float = 0.01
+    skip_check: bool = False
+    manual_check_prog: Callable | None = None
+    cache_input_tensors: bool = False
+
+    def __post_init__(self):
+        self._tuner_cache = {}
+
+    # -------------------------
+    # key 生成（核心）
+    # -------------------------
+    def _make_key(self, *args, **kwargs):
+        if self.key_fn is not None:
+            return self.key_fn(*args, **kwargs)
+
+        # 默认行为：完全按输入区分（等价原 AutoTuneImpl）
+        key_args_tuple = args
+        key_kwargs_tuple = tuple(sorted(kwargs.items()))
+        return (key_args_tuple, key_kwargs_tuple)
+
+    # -------------------------
+    # configs 解析（支持 dynamic）
+    # -------------------------
+    def _resolve_configs(self, *args, **kwargs):
+        if callable(self.configs):
+            return self.configs(*args, **kwargs)
+        return self.configs
+
+    # -------------------------
+    # 构造 tuner
+    # -------------------------
+    def get_tunner(self, configs):
+        assert self.jit_impl.func is not None
+
+        autotuner = AutoTuner(
+            self.jit_impl.func,
+            configs=configs
+        ).set_profile_args(
+            supply_type=self.supply_type,
+            ref_prog=self.ref_prog,
+            supply_prog=self.supply_prog,
+            rtol=self.rtol,
+            atol=self.atol,
+            max_mismatched_ratio=self.max_mismatched_ratio,
+            skip_check=self.skip_check,
+            manual_check_prog=self.manual_check_prog,
+            cache_input_tensors=self.cache_input_tensors,
+        ).set_compile_args(
+            out_idx=self.jit_impl.out_idx,
+            execution_backend=self.jit_impl.execution_backend,
+            target=self.jit_impl.target,
+            target_host=self.jit_impl.target_host,
+            verbose=self.jit_impl.verbose,
+            pass_configs=self.jit_impl.pass_configs,
+        )
+
+        autotuner.run = partial(autotuner.run, self.warmup, self.rep, self.timeout)
+        return autotuner
+
+    # -------------------------
+    # 主入口
+    # -------------------------
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> JitKernel_NPU:
+        # key_dynamic_list = self._make_key(*args, **kwargs)
+        
+
+        # # ✅ cache hit
+        # if key_dynamic_list in self._tuner_cache:
+        #     return self._tuner_cache[key_dynamic_list]
+
+        # ✅ 动态 configs
+        configs = self._resolve_configs(*args, **kwargs)
+        print("configs: ", configs)
+
+        key_args_tuple = args
+        key_kwargs_tuple = tuple(sorted(kwargs.items()))
+        key = (key_args_tuple, key_kwargs_tuple)
+
+        def jit_compile(**config_arg):
+            return self.jit_impl.wrapper(*args, **kwargs, __tune_params=config_arg)
+
+        autotuner = self.get_tunner(configs)
+        autotuner.jit_compile = jit_compile
+        autotuner.set_kernel_parameters(key, self.jit_impl.signature.parameters)
+        autotuner._runtime_params = list(args)
+        artifact = autotuner.run()
+        self._tuner_cache[key] = artifact.kernel
+        return self._tuner_cache[key]
+
+def autotune_dynamic(
+    func: Callable[_P, _T] | PrimFunc | None = None,
+    *,
+    configs: dict | Callable,
+    key_fn: Callable[..., Any] | None = None,
+
+    warmup: int = 25,
+    rep: int = 100,
+    timeout: int = 100,
+
+    supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto,
+    ref_prog: Callable | None = None,
+    supply_prog: Callable | None = None,
+    rtol: float = 1e-2,
+    atol: float = 1e-2,
+    max_mismatched_ratio: float = 0.01,
+    skip_check: bool = False,
+    manual_check_prog: Callable | None = None,
+    cache_input_tensors: bool = False,
+):
+    if callable(func):
+        raise ValueError(
+            "Use tilelang.autotune_dynamic without arguments is not supported yet."
+        )
+    elif isinstance(func, PrimFunc):
+        raise ValueError(
+            "Use tilelang.autotune_dynamic to decorate prim_func is not supported yet."
+        )
+    else:
+
+        def decorator(impl):
+            if callable(impl) and hasattr(impl, '__jit_impl__'):
+                jit_impl = impl.__jit_impl__
+            else:
+                jit_impl = impl
+
+            return AutoTuneDynamicImpl(
+                jit_impl=jit_impl,
+                configs=configs,
+                key_fn=key_fn,
                 warmup=warmup,
                 rep=rep,
                 timeout=timeout,
