@@ -101,6 +101,7 @@ from . import (
     engine,  # noqa: F401
 )
 from .autotuner import autotune  # noqa: F401
+from .autotuner import autotune_dynamic  # noqa: F401
 from .transform import PassConfigKey  # noqa: F401
 
 from .engine import lower, register_cuda_postproc, register_hip_postproc  # noqa: F401
