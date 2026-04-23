@@ -14,7 +14,7 @@ DTYPES = ["int32"]
 BINARY_CASES = [(4, 32, 4)]
 
 
-def binary_kernel(M, N, block_M, op_name):
+def binary_bit_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
@@ -117,7 +117,7 @@ def run_binary_case(M, N, block_M, dtype, op_name):
     B = gen_tensor((N,), dtype, kind="randint", low=0, high=10)
 
     out_full = gen_tensor((N,), dtype, kind="zeros")
-    full_kernel = tilelang.compile(binary_kernel(M, N, block_M, op_name), target="npuir")
+    full_kernel = tilelang.compile(binary_bit_kernel(M, N, block_M, op_name), target="npuir")
     full_kernel(A, B, out_full)
 
     expected_full = compute_expected(A.cpu(), B.cpu(), op_name)

@@ -12,7 +12,7 @@ import testcommon as tc
 pytestmark = [pytest.mark.mode("Expert")]
 DATATYPE_CASES = ["float16", "float32"]
 
-def vec_add(M, N, block_M, block_N, dtype):
+def vec_add_exp(M, N, block_M, block_N, dtype):
     m_num = M // block_M
     n_num = N // block_N
     BLOCK_SIZE = 20
@@ -41,7 +41,7 @@ def vec_add(M, N, block_M, block_N, dtype):
 
     return vecAdd2dScalarInput
 
-def vec_add_2(M, N, block_M, block_N, dtype):
+def vec_add_2_exp(M, N, block_M, block_N, dtype):
     m_num = M // block_M
     n_num = N // block_N
     BLOCK_SIZE = 20
@@ -70,7 +70,7 @@ def vec_add_2(M, N, block_M, block_N, dtype):
 
     return vecAdd2dScalarTensor
 
-def vec_add_3(M, N, block_M, dtype):
+def vec_add_3_exp(M, N, block_M, dtype):
     m_num = M // block_M
     n_num = 1
     BLOCK_SIZE = 20
@@ -101,7 +101,7 @@ def vec_add_3(M, N, block_M, dtype):
 def test_vadd_scalar_1(dtype):
     datatype = tc.resolve_dtype(dtype)
     M, N = 128, 256
-    func = vec_add(M, N, 32, 32, dtype)
+    func = vec_add_exp(M, N, 32, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
     a = torch.randn(M, N, dtype=datatype).npu()
     b = torch.randn(N, dtype=datatype).npu()
@@ -116,7 +116,7 @@ def test_vadd_scalar_1(dtype):
 def test_vadd_scalar_2(dtype):
     datatype = tc.resolve_dtype(dtype)
     M, N = 128, 256
-    func = vec_add_2(M, N, 32, 32, dtype)
+    func = vec_add_2_exp(M, N, 32, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
     a = torch.randn(M, N, dtype=datatype).npu()
     b = torch.randn(M, N, dtype=datatype).npu()
@@ -131,7 +131,7 @@ def test_vadd_scalar_2(dtype):
 def test_vadd_scalar_3(dtype):
     datatype = tc.resolve_dtype(dtype)
     M, N = 128, 32
-    func = vec_add_3(M, N, 32, dtype)
+    func = vec_add_3_exp(M, N, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
     a = torch.randn(M, N, dtype=datatype).npu()
     b = torch.randn(M, N, dtype=datatype).npu()
