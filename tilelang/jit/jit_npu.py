@@ -1,9 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
 import ctypes
+import fcntl
 import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Union
 import torch
@@ -23,6 +25,57 @@ from tvm import tir
 from tvm.tir import PrimFunc
 
 from tilelang.profiler import Profiler, TensorSupplyType
+
+
+class FileLock:
+    """Cross-process file lock using fcntl for Linux/Unix systems."""
+    
+    def __init__(self, lock_path: str, timeout: float = 30.0):
+        self.lock_path = lock_path
+        self.lock_path_dir = os.path.dirname(lock_path)
+        if self.lock_path_dir:
+            os.makedirs(self.lock_path_dir, exist_ok=True)
+        self.timeout = timeout
+        self._lock_file = None
+    
+    def acquire(self) -> bool:
+        """Acquire the lock with timeout. Returns True if successful."""
+        self._lock_file = open(self.lock_path, "w")
+        start_time = time.time()
+        while True:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except (IOError, OSError):
+                if time.time() - start_time >= self.timeout:
+                    self._lock_file.close()
+                    self._lock_file = None
+                    return False
+                time.sleep(0.05)
+    
+    def release(self) -> None:
+        """Release the lock."""
+        if self._lock_file is not None:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                self._lock_file.close()
+            except Exception:
+                pass
+            self._lock_file = None
+    
+    def __enter__(self):
+        if not self.acquire():
+            raise TimeoutError(f"Failed to acquire lock {self.lock_path} within {self.timeout}s")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+
+def _get_cache_lock(cache_path: str, timeout: float = 30.0):
+    """Get a file lock for cache directory operations."""
+    lock_path = os.path.join(cache_path, ".cache.lock")
+    return FileLock(lock_path, timeout)
 
 
 class LaunchThreadExtractor:
@@ -1494,45 +1547,56 @@ class compiler_npu:
 
     def make_npu_launcher_stub(self, name, header_src, wrapper_src, debug=False):
         """
-        Generate the launcher stub to launch the kernel
+        Generate the launcher stub to launch the kernel.
+        
+        Uses file locking to ensure xdist compatibility - multiple pytest workers
+        can safely compile the same kernel concurrently.
         """
         precompile_cache_path = get_runtime_file_cache(header_src)
         header_path = os.path.join(precompile_cache_path, "npu_launcher.h")
         precompile_header_path = os.path.join(
             precompile_cache_path, "npu_launcher.h.gch"
         )
-        if not (
-            os.path.exists(precompile_header_path)
-            and os.path.getsize(precompile_header_path) > 0
-        ):
-            print("Precompiling NPU launcher header...")
-            with tempfile.TemporaryDirectory() as tmpdir:
-                safe_copy(header_src, header_path)
-                tmp_header_gch_path = os.path.join(tmpdir, "npu_launcher.h.gch")
-                precompile_npu_ext(header_path, tmp_header_gch_path)
-                safe_copy(tmp_header_gch_path, precompile_header_path)
+        
+        with _get_cache_lock(precompile_cache_path, timeout=60.0):
+            if not (
+                os.path.exists(precompile_header_path)
+                and os.path.getsize(precompile_header_path) > 0
+            ):
+                print("Precompiling NPU launcher header...")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    safe_copy(header_src, header_path)
+                    tmp_header_gch_path = os.path.join(tmpdir, "npu_launcher.h.gch")
+                    precompile_npu_ext(header_path, tmp_header_gch_path)
+                    safe_copy(tmp_header_gch_path, precompile_header_path)
 
         cache_key = wrapper_src.encode("utf-8") + Path(header_src).read_bytes()
         wrapper_cache_path = get_runtime_file_cache(cache_key)
         launcher_so_path = os.path.join(wrapper_cache_path, f"{name}.so")
+        
         if os.path.exists(launcher_so_path) and os.path.getsize(launcher_so_path) > 0:
             return launcher_so_path
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dst_path = os.path.join(tmpdir, f"{name}.cxx")
-            tmp_so_path = os.path.join(tmpdir, f"{name}.so")
-            with open(dst_path, "w") as f:
-                f.write(wrapper_src)
-            so = build_npu_ext(
-                name,
-                header_path,
-                dst_path,
-                kernel_launcher="torch",
-                precompile=True,
-                output_path=tmp_so_path,
-            )
-            safe_copy(so, launcher_so_path)
-            return launcher_so_path
+        
+        with _get_cache_lock(wrapper_cache_path, timeout=60.0):
+            if os.path.exists(launcher_so_path) and os.path.getsize(launcher_so_path) > 0:
+                return launcher_so_path
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dst_path = os.path.join(tmpdir, f"{name}.cxx")
+                tmp_so_path = os.path.join(tmpdir, f"{name}.so")
+                with open(dst_path, "w") as f:
+                    f.write(wrapper_src)
+                so = build_npu_ext(
+                    name,
+                    header_path,
+                    dst_path,
+                    kernel_launcher="torch",
+                    precompile=True,
+                    output_path=tmp_so_path,
+                )
+                safe_copy(so, launcher_so_path)
+        
+        return launcher_so_path
 
     def check_debug_op(self, func) -> bool:
         """

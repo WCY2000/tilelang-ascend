@@ -5,6 +5,8 @@
 import os
 import json
 import shutil
+import fcntl
+import time
 from pathlib import Path
 from typing import Callable, List, Literal, Union, Optional
 from tvm.target import Target
@@ -15,6 +17,7 @@ from tilelang.engine.param import KernelParam
 import threading
 import cloudpickle
 import logging
+import tempfile
 from tilelang.utils.npu_utils import compute_sha256_hash
 
 from tilelang import env
@@ -25,6 +28,95 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from tilelang.autotuner.param import AutotuneResult
+
+
+def _atomic_write_file(path: Path, content: Union[str, bytes], mode: str = "w") -> None:
+    """Write content to file atomically using temp file + rename pattern."""
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    
+    is_binary = mode == "wb" or isinstance(content, bytes)
+    write_mode = "wb" if is_binary else "w"
+    
+    with tempfile.NamedTemporaryFile(
+        mode=write_mode,
+        dir=str(parent),
+        prefix=path.name + ".tmp",
+        suffix=".partial",
+        delete=False
+    ) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = Path(tmp_file.name)
+    
+    tmp_path.replace(path)
+
+
+def _atomic_copy(src: str, dst: Path) -> None:
+    """Copy file atomically using temp file + rename pattern."""
+    dst = Path(dst)
+    parent = dst.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    
+    with tempfile.NamedTemporaryFile(
+        dir=str(parent),
+        prefix=dst.name + ".tmp",
+        suffix=".partial",
+        delete=False
+    ) as tmp_file:
+        shutil.copy2(src, tmp_file.name)
+        tmp_path = Path(tmp_file.name)
+    
+    tmp_path.replace(dst)
+
+
+class FileLock:
+    """Cross-process file lock using fcntl for Linux/Unix systems."""
+    
+    def __init__(self, lock_path: Path, timeout: float = 30.0):
+        self.lock_path = Path(lock_path)
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self.timeout = timeout
+        self._lock_file = None
+    
+    def acquire(self) -> bool:
+        """Acquire the lock with timeout. Returns True if successful."""
+        self._lock_file = open(self.lock_path, "w")
+        start_time = time.time()
+        while True:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except (IOError, OSError):
+                if time.time() - start_time >= self.timeout:
+                    self._lock_file.close()
+                    self._lock_file = None
+                    return False
+                time.sleep(0.05)
+    
+    def release(self) -> None:
+        """Release the lock."""
+        if self._lock_file is not None:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                self._lock_file.close()
+            except Exception:
+                pass
+            self._lock_file = None
+    
+    def __enter__(self):
+        if not self.acquire():
+            raise TimeoutError(f"Failed to acquire lock {self.lock_path} within {self.timeout}s")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+
+def _with_cache_lock(cache_path: Path, timeout: float = 30.0):
+    """Get a file lock for cache directory operations."""
+    lock_path = cache_path / ".cache.lock"
+    return FileLock(lock_path, timeout)
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
@@ -418,39 +510,33 @@ class KernelCache:
             - params.pkl: The serialized kernel parameters
         """
         cache_path = self._get_cache_path(key)
-        os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+        cache_path.mkdir(parents=True, exist_ok=True)
+        
+        with _with_cache_lock(cache_path):
+            try:
+                kernel_path = cache_path / KERNEL_PATH
+                _atomic_write_file(kernel_path, kernel.artifact.kernel_source)
+            except Exception as e:
+                logger.error(f"Error saving kernel source code to disk: {e}")
 
-        # Save kernel source code
-        try:
-            kernel_path = os.path.join(cache_path, KERNEL_PATH)
-            with open(kernel_path, "w") as f:
-                f.write(kernel.artifact.kernel_source)
-        except Exception as e:
-            logger.error(f"Error saving kernel source code to disk: {e}")
+            try:
+                wrapped_kernel_path = cache_path / WRAPPED_KERNEL_PATH
+                _atomic_write_file(wrapped_kernel_path, kernel.adapter.get_kernel_source())
+            except Exception as e:
+                logger.error(f"Error saving wrapped kernel source code to disk: {e}")
 
-        # Save wrapped kernel source code
-        try:
-            wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            with open(wrapped_kernel_path, "w") as f:
-                f.write(kernel.adapter.get_kernel_source())
-        except Exception as e:
-            logger.error(f"Error saving wrapped kernel source code to disk: {e}")
+            try:
+                kernel_lib_path = cache_path / KERNEL_LIB_PATH
+                src_lib_path = kernel.adapter.libpath
+                _atomic_copy(src_lib_path, kernel_lib_path)
+            except Exception as e:
+                logger.error(f"Error saving kernel library to disk: {e}")
 
-        # Save kernel library
-        try:
-            kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
-            src_lib_path = kernel.adapter.libpath
-            shutil.copy(src_lib_path, kernel_lib_path)
-        except Exception as e:
-            logger.error(f"Error saving kernel library to disk: {e}")
-
-        # Save kernel parameters
-        try:
-            params_path = os.path.join(cache_path, PARAMS_PATH)
-            with open(params_path, "wb") as f:
-                cloudpickle.dump(kernel.params, f)
-        except Exception as e:
-            logger.error(f"Error saving kernel parameters to disk: {e}")
+            try:
+                params_path = cache_path / PARAMS_PATH
+                _atomic_write_file(params_path, cloudpickle.dumps(kernel.params))
+            except Exception as e:
+                logger.error(f"Error saving kernel parameters to disk: {e}")
 
     def _load_kernel_from_disk(
         self,
@@ -607,29 +693,22 @@ class KernelCache:
         cache_path.mkdir(parents=True, exist_ok=True)
         autotune_path.mkdir(exist_ok=True)
 
-        # --- NPU kernel artefacts (entry root) ---
-        self._save_npu_kernel_to_disk(cache_path, result.kernel, verbose)
+        with _with_cache_lock(cache_path):
+            self._save_npu_kernel_to_disk_unlocked(cache_path, result.kernel, verbose)
 
-        # --- Tuning metadata (autotune/ subfolder) ---
-        self._try_save(
-            "best config",
-            lambda: _write_json(
-                autotune_path / AUTOTUNE_BEST_CONFIG_PATH, result.config
-            ),
-        )
-        self._try_save(
-            "function",
-            lambda: (autotune_path / AUTOTUNE_FUNCTION_PATH).write_bytes(
+            _atomic_write_file(
+                autotune_path / AUTOTUNE_BEST_CONFIG_PATH,
+                json.dumps(result.config)
+            )
+            _atomic_write_file(
+                autotune_path / AUTOTUNE_FUNCTION_PATH,
                 cloudpickle.dumps(result.func)
-            ),
-        )
-        self._try_save(
-            "latency",
-            lambda: _write_json(
+            )
+            latency_data = {"latency": result.latency, "ref_latency": result.ref_latency}
+            _atomic_write_file(
                 autotune_path / AUTOTUNE_LATENCY_PATH,
-                {"latency": result.latency, "ref_latency": result.ref_latency},
-            ),
-        )
+                json.dumps(latency_data)
+            )
 
         if verbose:
             logger.debug(f"Autotune result saved to {autotune_path}")
@@ -646,63 +725,56 @@ class KernelCache:
         autotune_path = cache_path / AUTOTUNE_SUBDIR
         if not autotune_path.exists():
             return None
+        
+        with _with_cache_lock(cache_path, timeout=5.0):
+            try:
+                config = _read_json(autotune_path / AUTOTUNE_BEST_CONFIG_PATH)
+                func = cloudpickle.loads(
+                    (autotune_path / AUTOTUNE_FUNCTION_PATH).read_bytes()
+                )
+                latency_data = _read_json(autotune_path / AUTOTUNE_LATENCY_PATH)
+            except Exception as exc:
+                logger.error(
+                    f"Failed to load autotune metadata from {autotune_path}: {exc}"
+                )
+                return None
 
-        try:
-            config = _read_json(autotune_path / AUTOTUNE_BEST_CONFIG_PATH)
-            func = cloudpickle.loads(
-                (autotune_path / AUTOTUNE_FUNCTION_PATH).read_bytes()
+            latency = latency_data["latency"]
+            ref_latency = latency_data["ref_latency"]
+
+            kernel = self._load_npu_kernel_from_disk_unlocked(cache_path, func=func, out_idx=out_idx)
+            if kernel is None:
+                return None
+
+            kernel.update_tuner_result(
+                config=config, latency=latency, ref_latency=ref_latency
             )
-            latency_data = _read_json(autotune_path / AUTOTUNE_LATENCY_PATH)
-        except Exception as exc:
-            logger.error(
-                f"Failed to load autotune metadata from {autotune_path}: {exc}"
+            from tilelang.autotuner.param import AutotuneResult
+
+            return AutotuneResult(
+                config=config,
+                func=func,
+                kernel=kernel,
+                libcode=kernel.get_kernel_source(),
+                latency=latency,
+                ref_latency=ref_latency,
             )
-            return None
 
-        latency = latency_data["latency"]
-        ref_latency = latency_data["ref_latency"]
-
-        kernel = self._load_npu_kernel_from_disk(cache_path, func=func, out_idx=out_idx)
-        if kernel is None:
-            return None
-
-        kernel.update_tuner_result(
-            config=config, latency=latency, ref_latency=ref_latency
-        )
-        from tilelang.autotuner.param import AutotuneResult
-
-        return AutotuneResult(
-            config=config,
-            func=func,
-            kernel=kernel,
-            libcode=kernel.get_kernel_source(),
-            latency=latency,
-            ref_latency=ref_latency,
-        )
-
-    def _save_npu_kernel_to_disk(
+    def _save_npu_kernel_to_disk_unlocked(
         self, cache_path: Path, kernel: JitKernel_NPU, verbose: bool = False
     ) -> None:
+        """Save kernel without acquiring lock (caller must hold lock)."""
+        cache_path.mkdir(parents=True, exist_ok=True)
+        
         if kernel.mlir_content is not None:
-            self._try_save(
-                "kernel MLIR",
-                lambda: (cache_path / AUTOTUNE_KERNEL_MLIR_PATH).write_text(
-                    kernel.mlir_content
-                ),
-            )
-        self._try_save(
-            "wrapped kernel",
-            lambda: (cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH).write_bytes(
-                kernel.get_kernel_source()
-            ),
-        )
-
-        self._try_save(
-            "main.so",
-            lambda: shutil.copy(
-                kernel.so_launcher_path, cache_path / AUTOTUNE_SO_LAUNCHER_PATH
-            ),
-        )
+            mlir_path = cache_path / AUTOTUNE_KERNEL_MLIR_PATH
+            _atomic_write_file(mlir_path, kernel.mlir_content)
+        
+        wrapped_path = cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH
+        _atomic_write_file(wrapped_path, kernel.get_kernel_source())
+        
+        so_path = cache_path / AUTOTUNE_SO_LAUNCHER_PATH
+        _atomic_copy(kernel.so_launcher_path, so_path)
 
         metadata = {
             "symbolic": kernel.symbolic,
@@ -720,11 +792,77 @@ class KernelCache:
             "tensor_kinds": kernel.tensor_kinds,
             "kernel_src": kernel.utils_kernel_src,
         }
-        self._try_save(
-            "metadata",
-            lambda: (cache_path / AUTOTUNE_METADATA_PATH).write_bytes(
-                cloudpickle.dumps(metadata)
-            ),
+        metadata_path = cache_path / AUTOTUNE_METADATA_PATH
+        _atomic_write_file(metadata_path, cloudpickle.dumps(metadata))
+        
+        if verbose:
+            logger.debug(f"NPU kernel saved to {cache_path}")
+
+    def _save_npu_kernel_to_disk(
+        self, cache_path: Path, kernel: JitKernel_NPU, verbose: bool = False
+    ) -> None:
+        """Save kernel with file lock for xdist compatibility."""
+        cache_path.mkdir(parents=True, exist_ok=True)
+        
+        with _with_cache_lock(cache_path):
+            self._save_npu_kernel_to_disk_unlocked(cache_path, kernel, verbose)
+
+    def _load_npu_kernel_from_disk_unlocked(
+        self,
+        cache_path: Path,
+        func: Callable,
+        out_idx: Optional[List[int]],
+    ) -> Optional[JitKernel_NPU]:
+        """Load kernel without acquiring lock (caller must hold lock)."""
+        cache_path = Path(cache_path)
+        if not cache_path.exists():
+            return None
+        
+        so_path = cache_path / AUTOTUNE_SO_LAUNCHER_PATH
+        metadata_path = cache_path / AUTOTUNE_METADATA_PATH
+        
+        if not so_path.exists() or not metadata_path.exists():
+            logger.debug(f"Cache entry incomplete at {cache_path}, skipping load")
+            return None
+        
+        kernel_source: Optional[str] = None
+        kernel_global_source: Optional[bytes] = None
+        metadata: Optional[dict] = None
+        
+        mlir_path = cache_path / AUTOTUNE_KERNEL_MLIR_PATH
+        if mlir_path.exists():
+            try:
+                kernel_source = mlir_path.read_text()
+            except Exception as exc:
+                logger.error(f"Error loading kernel MLIR: {exc}")
+        
+        wrapped_path = cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH
+        if wrapped_path.exists():
+            try:
+                kernel_global_source = wrapped_path.read_bytes()
+            except Exception as exc:
+                logger.error(f"Error loading wrapped kernel: {exc}")
+        
+        try:
+            metadata = cloudpickle.loads(metadata_path.read_bytes())
+        except Exception as exc:
+            logger.error(f"Error loading metadata: {exc}")
+        
+        if not (kernel_global_source and metadata):
+            logger.warning(f"Incomplete NPU kernel artefacts at {cache_path}.")
+            return None
+        
+        if not so_path.exists():
+            logger.warning(f"Missing .so file at {so_path}.")
+            return None
+        
+        return JitKernel_NPU.from_database(
+            mod=func,
+            kernel_source=kernel_source,
+            kernel_launcher_path=str(so_path),
+            kernel_utils_path=None,
+            metadata=metadata,
+            out_idx=out_idx,
         )
 
     def _load_npu_kernel_from_disk(
@@ -733,44 +871,20 @@ class KernelCache:
         func: Callable,
         out_idx: Optional[List[int]],
     ) -> Optional[JitKernel_NPU]:
+        """Load kernel with file lock for xdist compatibility."""
+        cache_path = Path(cache_path)
         if not cache_path.exists():
             return None
-
-        kernel_source: Optional[str] = None
-        kernel_global_source: Optional[bytes] = None
-        metadata: Optional[dict] = None
-
-        try:
-            kernel_source = (cache_path / AUTOTUNE_KERNEL_MLIR_PATH).read_text()
-        except Exception as exc:
-            logger.error(f"Error loading kernel MLIR: {exc}")
-
-        try:
-            kernel_global_source = (
-                cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH
-            ).read_bytes()
-        except Exception as exc:
-            logger.error(f"Error loading wrapped kernel: {exc}")
-
-        try:
-            metadata = cloudpickle.loads(
-                (cache_path / AUTOTUNE_METADATA_PATH).read_bytes()
-            )
-        except Exception as exc:
-            logger.error(f"Error loading metadata: {exc}")
-
-        if not (kernel_global_source and metadata):
-            logger.warning(f"Incomplete NPU kernel artefacts at {cache_path}.")
+        
+        so_path = cache_path / AUTOTUNE_SO_LAUNCHER_PATH
+        metadata_path = cache_path / AUTOTUNE_METADATA_PATH
+        
+        if not so_path.exists() or not metadata_path.exists():
+            logger.debug(f"Cache entry incomplete at {cache_path}, skipping load")
             return None
-
-        return JitKernel_NPU.from_database(
-            mod=func,
-            kernel_source=kernel_source,
-            kernel_launcher_path=str(cache_path / AUTOTUNE_SO_LAUNCHER_PATH),
-            kernel_utils_path=None,
-            metadata=metadata,
-            out_idx=out_idx,
-        )
+        
+        with _with_cache_lock(cache_path, timeout=5.0):
+            return self._load_npu_kernel_from_disk_unlocked(cache_path, func, out_idx)
 
     def _try_save(self, label: str, fn: Callable) -> None:
         try:
