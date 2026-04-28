@@ -2,9 +2,8 @@
 # Licensed under the MIT License.
 
 from dataclasses import dataclass
-from .base import BaseTemplate
+from .base import BaseTemplate, AscendArch
 from tvm import te
-from ..arch import TileDevice
 from ..roller import Hint
 from typing import List
 from ..utils import get_roller_hints_from_func
@@ -30,7 +29,7 @@ class GEMVTemplate(BaseTemplate):
     custom_mem_mul: float = 1
 
     def get_hardware_aware_configs(
-        self, arch: TileDevice = None, topk: int = 10
+        self, arch: AscendArch = None, topk: int = 10
     ) -> List[Hint]:
         """
         Retrieves optimized hardware-aware configurations.

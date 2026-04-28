@@ -2,15 +2,12 @@
 # Licensed under the MIT License.
 
 # Import necessary modules
-from dataclasses import dataclass  # Used for defining data classes
-from .base import BaseTemplate  # Importing the base class for templates
-from tvm import te  # Importing TVM's tensor expression module
-from ..arch import (
-    TileDevice,
-)  # Importing TileDevice for hardware-specific configurations
-from ..roller import Hint  # Importing Hint for optimization hints
-from typing import List  # Importing List type hint
-from ..utils import get_roller_hints_from_func  # Function to obtain optimization hints
+from dataclasses import dataclass
+from .base import BaseTemplate, AscendArch
+from tvm import te
+from ..roller import Hint
+from typing import List
+from ..utils import get_roller_hints_from_func
 
 
 @dataclass
@@ -29,7 +26,7 @@ class ElementwiseTemplate(BaseTemplate):
     custom_mem_mul: float = 1
 
     def get_hardware_aware_configs(
-        self, arch: TileDevice = None, topk: int = 10
+        self, arch: AscendArch = None, topk: int = 10
     ) -> List[Hint]:
         """
         Retrieves hardware-aware optimization configurations.
