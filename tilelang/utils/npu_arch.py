@@ -201,6 +201,26 @@ def supports_native_bf16(device_name: str = None) -> bool:
     return arch.supports_native_bf16
 
 
+def get_arch(target=None) -> AscendArch:
+    """Get AscendArch from TVM Target or return default AscendArch.
+    
+    Args:
+        target: TVM Target object (ignored, always returns AscendArch)
+        
+    Returns:
+        AscendArch instance
+    """
+    return get_arch_obj()
+
+
+def is_tensorcore_supported_precision(in_dtype: str, accum_dtype: str, arch=None) -> bool:
+    """Check if tensorcore supports the precision (Ascend uses cube, not tensorcore).
+    
+    Returns False for Ascend as tensorcore is NVIDIA-specific.
+    """
+    return False
+
+
 __all__ = [
     "AscendArch",
     "is_ascend_arch",
@@ -208,4 +228,6 @@ __all__ = [
     "get_arch_obj",
     "get_ascend_device_name",
     "supports_native_bf16",
+    "get_arch",
+    "is_tensorcore_supported_precision",
 ]
