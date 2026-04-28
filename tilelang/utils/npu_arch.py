@@ -78,6 +78,7 @@ class AscendArch:
             from tilelang.utils import NPUUtils
             npuutils = NPUUtils()
             self.compute_max_core = npuutils.get_aicube_core_num()
+            self.aicube_core_num = self.compute_max_core
             self.aivector_core_num = npuutils.get_aivector_core_num()
         except Exception as e:
             logging.getLogger(__name__).warning(
@@ -85,6 +86,7 @@ class AscendArch:
                 "Using fallback specs."
             )
             self.compute_max_core = spec["cores"]
+            self.aicube_core_num = spec["cores"]
             self.aivector_core_num = spec["cores"]
 
         self.ub_cap = spec["UB"]

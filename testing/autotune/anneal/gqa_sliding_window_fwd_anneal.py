@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import glob
 
-from tilelang.carver.anneal.policy import AnnealTemplate, Annealparam
+from tilelang.carver.anneal import AnnealTemplate, Annealparam
 
 tilelang.cache.clear_cache()
 

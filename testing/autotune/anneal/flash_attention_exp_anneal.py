@@ -5,7 +5,7 @@ import torch
 import tilelang
 import tilelang.language as T
 
-from tilelang.carver.anneal.policy import AnnealTemplate
+from tilelang.carver.anneal import AnnealTemplate
 
 tilelang.cache.clear_cache()
 
