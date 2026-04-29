@@ -4,8 +4,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from tilelang.utils.npu_arch import AscendArch, get_arch_obj
-from .hint import Hint
-from .node import OutputNode
+from ..roller.hint import Hint
+from ..roller.node import OutputNode
 from typing import List
 from tvm.tir import PrimFunc
 
