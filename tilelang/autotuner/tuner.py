@@ -321,16 +321,9 @@ class AutoTuner:
         self, func: Callable, device_type: str, device: int
     ) -> Callable:
         """Return a wrapper that pins the given device before calling *func*."""
-        if device_type == "cuda":
-
-            def inner(**config_arg):
-                torch.cuda.set_device(device)
-                return func(**config_arg)
-        else:  # npu
-
-            def inner(**config_arg):
-                torch.npu.set_device(device)
-                return func(**config_arg)
+        def inner(**config_arg):
+            torch.npu.set_device(device)
+            return func(**config_arg)
 
         return inner
 
@@ -407,32 +400,6 @@ class AutoTuner:
             )
             num_workers = max_cpu_count
         return num_workers
-
-    def _compile_all(
-        self,
-        config_args: list[dict[str, Any]],
-        pool: concurrent.futures.ThreadPoolExecutor,
-    ) -> list[tuple[tilelang.JitKernel_NPU, dict[str, Any]]]:
-        """Submit all compile jobs and collect successful (kernel, config) pairs."""
-        compile_func = self._resolve_compile_func()
-        future_to_index = {
-            pool.submit(compile_func, **cfg): i for i, cfg in enumerate(config_args)
-        }
-        results = []
-        for future in tqdm(
-            concurrent.futures.as_completed(future_to_index),
-            total=len(future_to_index),
-            desc="Compiling configurations",
-        ):
-            idx = future_to_index[future]
-            config = config_args[idx]
-            try:
-                results.append((future.result(), config))
-            except Exception as exc:
-                logger.debug(
-                    f"Compilation failed for config {config} at index {idx}: {exc}"
-                )
-        return results
 
     def _save_result_to_disk(self, key, result: AutotuneResult):
         from tilelang.cache.kernel_cache import KernelCache  # lazy — breaks cycle
